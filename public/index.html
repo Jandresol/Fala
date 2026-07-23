@@ -1,0 +1,15 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fala PT</title><link rel="stylesheet" href="style.css"></head>
+<body><main>
+  <header><div><span class="eyebrow">VOICE IMMERSION</span><h1>Fala PT</h1><p>Practice Brazilian Portuguese by speaking. No typing during the session.</p></div><div id="status" class="status">Offline</div></header>
+  <section class="card hero">
+    <div class="orb" id="orb"><span></span></div>
+    <h2 id="prompt">Ready for São Paulo?</h2>
+    <p id="subprompt">Start a live conversation, or prepare one from a Brazilian YouTube video.</p>
+    <div class="controls"><button id="start" class="primary">Start speaking</button><button id="stop" disabled>End session</button></div>
+  </section>
+  <section class="grid">
+    <div class="card"><span class="eyebrow">VIDEO IMMERSION</span><h3>Learn from YouTube</h3><p>Paste a video with Portuguese captions. Fala extracts reusable phrases and discusses the video with you.</p><form id="videoForm"><input id="youtubeUrl" type="url" placeholder="https://youtube.com/watch?v=..." required><button>Prepare video</button></form><div id="videoResult"></div></div>
+    <div class="card"><span class="eyebrow">MISSION</span><h3>Brazil research mode</h3><ul><li>Daily life in São Paulo</li><li>Meetings with USP researchers</li><li>AI, surveillance and public policy</li><li>Presenting and defending your project</li></ul></div>
+  </section>
+  <section class="card"><span class="eyebrow">SESSION MEMORY</span><h3>Target phrases</h3><div id="phrases" class="chips"><span>Eu gostaria de...</span><span>Pode repetir?</span><span>Na minha pesquisa...</span></div></section>
+</main><audio id="remoteAudio" autoplay></audio><script src="app.js"></script></body></html>
