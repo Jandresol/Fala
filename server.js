@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { randomUUID } from 'node:crypto';
-import { PERSONAS, TOPICS, MODES, buildSystemPrompt, buildVideoSystemPrompt, parseModelJson } from './lib/content.js';
+import { PERSONAS, TOPICS, MODES, buildSystemPrompt, buildVideoSystemPrompt, parseModelJson, isPlaceholderEcho, isRepeatingQuestion } from './lib/content.js';
 import { chat } from './lib/ollama.js';
 import { transcribe, synthesize } from './lib/speech.js';
 import { buildLessonFromVideo } from './lib/youtube.js';
@@ -44,6 +44,29 @@ function applyMemoryEffects(parsed, videoId) {
 function trimHistory(messages) {
   if (messages.length <= MAX_HISTORY + 1) return messages;
   return [messages[0], ...messages.slice(-MAX_HISTORY)];
+}
+
+function recentAssistantSpeaks(messages, count) {
+  return messages
+    .filter(m => m.role === 'assistant')
+    .slice(-count)
+    .map(m => parseModelJson(m.content).speak)
+    .filter(Boolean);
+}
+
+async function chatWithRetry(messages) {
+  let raw = await chat(messages);
+  let parsed = parseModelJson(raw);
+  if (isPlaceholderEcho(parsed.speak)) {
+    raw = await chat([...messages, { role: 'user', content: 'Sua última resposta não foi uma fala real, foi o formato do JSON copiado. Responda de novo com fala de verdade, em português, seguindo o formato.' }]);
+    parsed = parseModelJson(raw);
+  }
+  const recent = recentAssistantSpeaks(messages, 3);
+  if (isRepeatingQuestion(parsed.speak, recent)) {
+    raw = await chat([...messages, { role: 'user', content: 'Você já perguntou isso antes de formas diferentes e a pessoa já respondeu. Não repita a mesma pergunta de novo. Aceite a última resposta da pessoa, reaja brevemente a ela, e mude de assunto ou avance para uma pergunta nova e diferente.' }]);
+    parsed = parseModelJson(raw);
+  }
+  return { raw, parsed };
 }
 
 app.get('/api/state', (req, res) => {
@@ -91,14 +114,18 @@ app.post('/api/session/start', async (req, res) => {
 
     let video = null;
     let system;
+    let vocabHint;
     if (videoId) {
       video = getVideoLesson(videoId);
       if (!video) return res.status(404).json({ error: 'Video lesson not found.' });
       system = buildVideoSystemPrompt({ persona: persona.id, difficulty: level, reviewPhrases: review, video });
+      vocabHint = [video.title, video.summary_pt, ...review.map(r => r.pt)].filter(Boolean).join('. ');
     } else {
       const chosenMode = MODES.some(m => m.id === mode) ? mode : 'topic';
-      if (!TOPICS.some(t => t.id === topic)) return res.status(400).json({ error: 'Invalid topic.' });
+      const t = TOPICS.find(x => x.id === topic);
+      if (!t) return res.status(400).json({ error: 'Invalid topic.' });
       system = buildSystemPrompt({ persona: persona.id, topic, mode: chosenMode, difficulty: level, reviewPhrases: review });
+      vocabHint = [t.label, t.desc, ...review.map(r => r.pt)].filter(Boolean).join('. ');
     }
 
     const openingInstruction = video
@@ -108,8 +135,7 @@ app.post('/api/session/start', async (req, res) => {
       { role: 'system', content: system },
       { role: 'user', content: openingInstruction },
     ];
-    const raw = await chat(messages);
-    const parsed = parseModelJson(raw);
+    const { raw, parsed } = await chatWithRetry(messages);
     messages.push({ role: 'assistant', content: raw });
     applyMemoryEffects(parsed, videoId || null);
 
@@ -121,7 +147,7 @@ app.post('/api/session/start', async (req, res) => {
       videoId: videoId || null,
     });
     const sessionId = randomUUID();
-    sessions.set(sessionId, { dbId, persona: persona.id, difficulty: level, videoId: videoId || null, messages });
+    sessions.set(sessionId, { dbId, persona: persona.id, difficulty: level, videoId: videoId || null, messages, vocabHint });
 
     const audio = await synthesize(parsed.speak, level);
     res.json({
@@ -143,12 +169,11 @@ app.post('/api/session/:id/turn', async (req, res) => {
   if (!session) return res.status(404).json({ error: 'Session not found. Start a new conversation.' });
   if (!req.body || !req.body.length) return res.status(400).json({ error: 'No audio received.' });
   try {
-    const { text: userText, clarity } = await transcribe(req.body);
+    const { text: userText, clarity } = await transcribe(req.body, session.vocabHint);
     if (!userText) return res.status(422).json({ error: 'Não entendi. Pode falar novamente?' });
 
     session.messages.push({ role: 'user', content: userText });
-    const raw = await chat(session.messages);
-    const parsed = parseModelJson(raw);
+    const { raw, parsed } = await chatWithRetry(session.messages);
     session.messages.push({ role: 'assistant', content: raw });
     session.messages = trimHistory(session.messages);
     applyMemoryEffects(parsed, session.videoId);
