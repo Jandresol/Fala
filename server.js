@@ -1,89 +1,181 @@
 import 'dotenv/config';
 import express from 'express';
-import crypto from 'crypto';
-import { YoutubeTranscript } from 'youtube-transcript';
+import { randomUUID } from 'node:crypto';
+import { PERSONAS, TOPICS, MODES, buildSystemPrompt, buildVideoSystemPrompt, parseModelJson } from './lib/content.js';
+import { chat } from './lib/ollama.js';
+import { transcribe, synthesize } from './lib/speech.js';
+import { buildLessonFromVideo } from './lib/youtube.js';
+import {
+  phrasesForReview,
+  allPhrases,
+  masteryBuckets,
+  recordNewPhrase,
+  recordReused,
+  recordStruggled,
+  startSession,
+  recordTurn,
+  endSession,
+  recentSessions,
+  clarityTrend,
+  currentStreak,
+  getAdaptiveDifficulty,
+  updateAdaptiveDifficulty,
+  saveVideoLesson,
+  getVideoLesson,
+  recentVideos,
+} from './lib/memory.js';
 
 const app = express();
 const port = process.env.PORT || 3000;
+const MAX_HISTORY = 20;
+
 app.use(express.json({ limit: '2mb' }));
-app.use(express.text({ type: ['application/sdp', 'text/plain'], limit: '2mb' }));
+app.use(express.raw({ type: ['audio/webm', 'audio/ogg', 'application/octet-stream'], limit: '15mb' }));
 app.use(express.static('public'));
 
-const baseCoach = `Você é Fala, uma parceira brasileira de conversação para uma estudante americana que fará pesquisa em São Paulo sobre IA, infraestrutura urbana, vigilância, políticas públicas, Smart Sampa e USP/C4AI.
+const sessions = new Map();
 
-REGRAS:
-- Converse por voz em português brasileiro. Não peça para a usuária digitar.
-- Seja natural, calorosa mas não infantil; soe como uma jovem pesquisadora de São Paulo.
-- Faça perguntas curtas e mantenha a usuária falando pelo menos 60% do tempo.
-- Introduza no máximo 2 expressões novas por vez e reutilize-as em 3 contextos posteriores.
-- Corrija apenas erros importantes ou ligados às expressões-alvo. Modele a forma correta rapidamente e continue.
-- Quando ela travar, simplifique, dê uma pista em português e espere. Use inglês somente quando ela pedir explicitamente.
-- Treine estratégias: “Pode repetir?”, “Mais devagar, por favor”, “O que quer dizer...?”, “Como se diz...?”.
-- Aumente gradualmente a velocidade e naturalidade.
-- Misture: vida diária em São Paulo, networking acadêmico, reuniões, entrevistas, apresentação do projeto, perguntas técnicas, ética e governança.
-- Nunca dê uma aula longa. Uma frase de feedback, depois outra pergunta.
-- No início, cumprimente-a, explique em uma frase que a sessão será somente falada e faça uma pergunta fácil.
-`;
+function applyMemoryEffects(parsed, videoId) {
+  for (const p of parsed.new_phrases) recordNewPhrase(p.pt, p.en, videoId);
+  for (const pt of parsed.reused_phrases) recordReused(pt);
+  for (const pt of parsed.struggled_phrases) recordStruggled(pt);
+}
 
-app.post('/session', async (req, res) => {
-  if (!process.env.OPENAI_API_KEY) return res.status(500).send('OPENAI_API_KEY is not configured.');
-  const extra = req.query.context ? decodeURIComponent(String(req.query.context)).slice(0, 10000) : '';
-  const session = {
-    type: 'realtime',
-    model: 'gpt-realtime-2.1',
-    reasoning: { effort: 'low' },
-    instructions: baseCoach + (extra ? `\nCONTEÚDO DA SESSÃO (extraído de vídeo):\n${extra}` : ''),
-    audio: {
-      input: { turn_detection: { type: 'semantic_vad', eagerness: 'medium', create_response: true, interrupt_response: true } },
-      output: { voice: 'marin' }
-    }
-  };
-  const fd = new FormData();
-  fd.set('sdp', req.body);
-  fd.set('session', JSON.stringify(session));
-  const safetyId = crypto.createHash('sha256').update(req.ip || 'local-user').digest('hex');
-  try {
-    const r = await fetch('https://api.openai.com/v1/realtime/calls', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'OpenAI-Safety-Identifier': safetyId },
-      body: fd
-    });
-    const body = await r.text();
-    res.status(r.status).type(r.headers.get('content-type') || 'application/sdp').send(body);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send('Could not create voice session.');
-  }
+function trimHistory(messages) {
+  if (messages.length <= MAX_HISTORY + 1) return messages;
+  return [messages[0], ...messages.slice(-MAX_HISTORY)];
+}
+
+app.get('/api/state', (req, res) => {
+  res.json({
+    topics: TOPICS,
+    modes: MODES,
+    suggestedDifficulty: getAdaptiveDifficulty(3),
+    review: phrasesForReview(6),
+    recentSessions: recentSessions(6),
+    recentVideos: recentVideos(6),
+  });
+});
+
+app.get('/api/dashboard', (req, res) => {
+  res.json({
+    streak: currentStreak(),
+    masteryBuckets: masteryBuckets(),
+    phrases: allPhrases(),
+    sessions: recentSessions(20),
+    clarityTrend: clarityTrend(14),
+    adaptiveDifficulty: getAdaptiveDifficulty(3),
+  });
 });
 
 app.post('/api/youtube', async (req, res) => {
   const { url } = req.body || {};
   if (!url) return res.status(400).json({ error: 'YouTube URL required.' });
   try {
-    const parts = await YoutubeTranscript.fetchTranscript(url, { lang: 'pt' }).catch(() => YoutubeTranscript.fetchTranscript(url));
-    const transcript = parts.map(x => x.text).join(' ').replace(/\s+/g, ' ').slice(0, 45000);
-    if (!transcript) throw new Error('No captions found');
-
-    const prompt = `Analise esta transcrição de um vídeo em português brasileiro para prática oral. Retorne SOMENTE JSON válido com esta estrutura:
-{"summary_pt":"resumo simples em português","phrases":[{"pt":"expressão exata ou natural","en":"tradução curta","use":"quando usar"}],"questions":["pergunta oral 1"],"context":"instruções compactas para um tutor de voz"}
-Selecione 6 expressões úteis, frequentes e reutilizáveis, não palavras isoladas. Crie 5 perguntas de conversação do fácil ao avançado. O contexto deve dizer para discutir o vídeo, ensinar duas expressões por vez e reciclar as anteriores.
-
-TRANSCRIÇÃO:\n${transcript}`;
-
-    const r = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'gpt-5.4-mini', input: prompt, text: { format: { type: 'json_object' } } })
-    });
-    if (!r.ok) throw new Error(await r.text());
-    const data = await r.json();
-    const text = data.output_text || data.output?.flatMap(o => o.content || []).find(c => c.type === 'output_text')?.text;
-    const lesson = JSON.parse(text);
-    res.json({ lesson, transcriptLength: transcript.length });
+    const lesson = await buildLessonFromVideo(url);
+    const videoId = saveVideoLesson({ url, ...lesson });
+    for (const p of lesson.phrases) recordNewPhrase(p.pt, p.en, videoId);
+    res.json({ videoId, ...lesson });
   } catch (err) {
     console.error(err);
-    res.status(422).json({ error: 'Could not read captions. The video may not have accessible captions.', detail: String(err.message || err) });
+    res.status(422).json({ error: err.message || 'Could not prepare a lesson from that video.' });
   }
 });
 
-app.listen(port, () => console.log(`Fala PT running at http://localhost:${port}`));
+app.post('/api/session/start', async (req, res) => {
+  try {
+    const { topic, mode, difficulty, videoId } = req.body || {};
+    const level = Math.max(1, Math.min(10, Number(difficulty) || getAdaptiveDifficulty(3)));
+    const persona = PERSONAS[Math.floor(Math.random() * PERSONAS.length)];
+    const review = phrasesForReview(4);
+
+    let video = null;
+    let system;
+    if (videoId) {
+      video = getVideoLesson(videoId);
+      if (!video) return res.status(404).json({ error: 'Video lesson not found.' });
+      system = buildVideoSystemPrompt({ persona: persona.id, difficulty: level, reviewPhrases: review, video });
+    } else {
+      const chosenMode = MODES.some(m => m.id === mode) ? mode : 'topic';
+      if (!TOPICS.some(t => t.id === topic)) return res.status(400).json({ error: 'Invalid topic.' });
+      system = buildSystemPrompt({ persona: persona.id, topic, mode: chosenMode, difficulty: level, reviewPhrases: review });
+    }
+
+    const openingInstruction = video
+      ? 'Comece a conversa agora. Cumprimente brevemente, mencione rapidamente o tema do vídeo em uma frase, e faça a primeira pergunta da lista de perguntas do vídeo.'
+      : 'Comece a conversa agora. Cumprimente brevemente, diga em uma frase que a conversa será só falada, e faça uma pergunta fácil para começar.';
+    let messages = [
+      { role: 'system', content: system },
+      { role: 'user', content: openingInstruction },
+    ];
+    const raw = await chat(messages);
+    const parsed = parseModelJson(raw);
+    messages.push({ role: 'assistant', content: raw });
+    applyMemoryEffects(parsed, videoId || null);
+
+    const dbId = startSession({
+      topic: video ? video.title : topic,
+      persona: persona.id,
+      difficulty: level,
+      mode: video ? 'video' : (mode || 'topic'),
+      videoId: videoId || null,
+    });
+    const sessionId = randomUUID();
+    sessions.set(sessionId, { dbId, persona: persona.id, difficulty: level, videoId: videoId || null, messages });
+
+    const audio = await synthesize(parsed.speak, level);
+    res.json({
+      sessionId,
+      persona: persona.id,
+      replyText: parsed.speak,
+      translation: parsed.translation,
+      audio: audio.toString('base64'),
+      newPhrases: parsed.new_phrases,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not start session. Is Ollama running?' });
+  }
+});
+
+app.post('/api/session/:id/turn', async (req, res) => {
+  const session = sessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found. Start a new conversation.' });
+  if (!req.body || !req.body.length) return res.status(400).json({ error: 'No audio received.' });
+  try {
+    const { text: userText, clarity } = await transcribe(req.body);
+    if (!userText) return res.status(422).json({ error: 'Não entendi. Pode falar novamente?' });
+
+    session.messages.push({ role: 'user', content: userText });
+    const raw = await chat(session.messages);
+    const parsed = parseModelJson(raw);
+    session.messages.push({ role: 'assistant', content: raw });
+    session.messages = trimHistory(session.messages);
+    applyMemoryEffects(parsed, session.videoId);
+    recordTurn(session.dbId, { clarity, struggled: parsed.struggled_phrases.length > 0 });
+
+    const audio = await synthesize(parsed.speak, session.difficulty);
+    res.json({
+      userText,
+      clarity,
+      replyText: parsed.speak,
+      translation: parsed.translation,
+      audio: audio.toString('base64'),
+      newPhrases: parsed.new_phrases,
+      reusedPhrases: parsed.reused_phrases,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not process your turn.' });
+  }
+});
+
+app.post('/api/session/:id/end', (req, res) => {
+  const session = sessions.get(req.params.id);
+  sessions.delete(req.params.id);
+  const finalRow = session ? endSession(session.dbId) : null;
+  const nextDifficulty = finalRow ? updateAdaptiveDifficulty(finalRow) : getAdaptiveDifficulty(3);
+  res.json({ ok: true, nextDifficulty });
+});
+
+app.listen(port, () => console.log(`Fala running locally at http://localhost:${port}`));

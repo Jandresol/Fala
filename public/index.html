@@ -1,15 +1,97 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fala PT</title><link rel="stylesheet" href="style.css"></head>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fala</title><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet"><link rel="stylesheet" href="style.css"></head>
 <body><main>
-  <header><div><span class="eyebrow">VOICE IMMERSION</span><h1>Fala PT</h1><p>Practice Brazilian Portuguese by speaking. No typing during the session.</p></div><div id="status" class="status">Offline</div></header>
-  <section class="card hero">
-    <div class="orb" id="orb"><span></span></div>
-    <h2 id="prompt">Ready for São Paulo?</h2>
-    <p id="subprompt">Start a live conversation, or prepare one from a Brazilian YouTube video.</p>
-    <div class="controls"><button id="start" class="primary">Start speaking</button><button id="stop" disabled>End session</button></div>
+
+  <nav class="topnav">
+    <span class="eyebrow">VOICE IMMERSION · 100% LOCAL</span>
+    <div class="tabs">
+      <button id="tabHome" class="tab active">Home</button>
+      <button id="tabDashboard" class="tab">Progress</button>
+    </div>
+  </nav>
+
+  <section id="home" class="screen">
+    <header><div><h1>Fala</h1><p>Practice Brazilian Portuguese by speaking. No typing, no cloud — everything runs on this machine.</p></div></header>
+
+    <div class="card">
+      <label class="field-label">Mode</label>
+      <div id="modeChips" class="chip-picker"></div>
+
+      <label class="field-label">Today's conversation</label>
+      <div id="topicChips" class="chip-picker"></div>
+
+      <label class="field-label">Difficulty: <span id="difficultyValue">3</span>/10 <span id="adaptiveNote" class="adaptive-note"></span></label>
+      <input id="difficulty" type="range" min="1" max="10" value="3">
+
+      <label class="checkbox-row"><input id="subtitlesToggle" type="checkbox"> Show subtitles while Fala speaks</label>
+
+      <div id="startError" class="error"></div>
+      <div class="controls"><button id="startBtn" class="primary">Start talking</button></div>
+    </div>
+
+    <div class="card">
+      <span class="eyebrow">VIDEO IMMERSION</span><h3>Learn from a YouTube video</h3>
+      <p>Paste a video with Portuguese captions. Fala extracts phrases and builds a conversation around it.</p>
+      <form id="videoForm"><input id="youtubeUrl" type="url" placeholder="https://youtube.com/watch?v=..." required><button>Prepare video</button></form>
+      <div id="videoResult"></div>
+      <div id="recentVideosBox"></div>
+    </div>
+
+    <section class="grid">
+      <div class="card"><span class="eyebrow">VOCABULARY MEMORY</span><h3>Phrases to review</h3><div id="reviewPhrases" class="chips"><span class="muted-note">Nothing yet — have a conversation first.</span></div></div>
+      <div class="card"><span class="eyebrow">RECENT SESSIONS</span><ul id="recentSessions"><li class="muted-note">No sessions yet.</li></ul></div>
+    </section>
   </section>
-  <section class="grid">
-    <div class="card"><span class="eyebrow">VIDEO IMMERSION</span><h3>Learn from YouTube</h3><p>Paste a video with Portuguese captions. Fala extracts reusable phrases and discusses the video with you.</p><form id="videoForm"><input id="youtubeUrl" type="url" placeholder="https://youtube.com/watch?v=..." required><button>Prepare video</button></form><div id="videoResult"></div></div>
-    <div class="card"><span class="eyebrow">MISSION</span><h3>Brazil research mode</h3><ul><li>Daily life in São Paulo</li><li>Meetings with USP researchers</li><li>AI, surveillance and public policy</li><li>Presenting and defending your project</li></ul></div>
+
+  <section id="live" class="screen hidden">
+    <div class="live-wrap">
+      <div class="orb-zone">
+        <button id="orb" class="orb"><span></span></button>
+        <p id="liveState">Toque para falar</p>
+      </div>
+      <div id="subtitleBox" class="subtitle-box hidden">
+        <p id="subtitlePt" class="subtitle-pt"></p>
+        <p id="subtitleEn" class="subtitle-en"></p>
+      </div>
+      <p id="clarityNote" class="clarity-note"></p>
+
+      <div class="transcript-box">
+        <span class="eyebrow">TRANSCRIPT</span>
+        <div id="transcriptLog" class="transcript-log"></div>
+      </div>
+
+      <div class="learned-box">
+        <span class="eyebrow">VOCABULARY LEARNED TODAY</span>
+        <div id="learnedChips" class="chips"></div>
+      </div>
+
+      <div class="controls"><button id="endBtn">End session</button></div>
+      <div id="liveError" class="error"></div>
+    </div>
   </section>
-  <section class="card"><span class="eyebrow">SESSION MEMORY</span><h3>Target phrases</h3><div id="phrases" class="chips"><span>Eu gostaria de...</span><span>Pode repetir?</span><span>Na minha pesquisa...</span></div></section>
-</main><audio id="remoteAudio" autoplay></audio><script src="app.js"></script></body></html>
+
+  <section id="dashboard" class="screen hidden">
+    <header><div><h1>Progress</h1><p>Streaks, mastery, and clarity over time.</p></div></header>
+
+    <section class="grid stat-grid">
+      <div class="card stat-card"><span class="eyebrow">STREAK</span><div id="streakValue" class="stat-value">0 dias</div></div>
+      <div class="card stat-card"><span class="eyebrow">ADAPTIVE DIFFICULTY</span><div id="adaptiveValue" class="stat-value">3/10</div></div>
+      <div class="card stat-card"><span class="eyebrow">CLARITY TREND</span><div id="claritySpark" class="spark"></div></div>
+    </section>
+
+    <div class="card">
+      <span class="eyebrow">VOCABULARY MASTERY</span>
+      <div id="masteryBars" class="mastery-bars"></div>
+    </div>
+
+    <div class="card">
+      <span class="eyebrow">ALL PHRASES</span>
+      <div id="allPhrases" class="phrase-list"></div>
+    </div>
+
+    <div class="card">
+      <span class="eyebrow">SESSION HISTORY</span>
+      <ul id="dashboardSessions"></ul>
+    </div>
+  </section>
+
+</main><audio id="remoteAudio"></audio><script src="app.js"></script></body></html>
