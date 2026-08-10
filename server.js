@@ -137,6 +137,8 @@ app.post('/api/session/start', async (req, res) => {
     ];
     const { raw, parsed } = await chatWithRetry(messages);
     messages.push({ role: 'assistant', content: raw });
+    console.log('OPENING MODEL PARSED:', JSON.stringify(parsed, null, 2));
+
     applyMemoryEffects(parsed, videoId || null);
 
     const dbId = startSession({
@@ -176,6 +178,9 @@ app.post('/api/session/:id/turn', async (req, res) => {
     const { raw, parsed } = await chatWithRetry(session.messages);
     session.messages.push({ role: 'assistant', content: raw });
     session.messages = trimHistory(session.messages);
+
+    console.log('MODEL PARSED:', JSON.stringify(parsed, null, 2));
+
     applyMemoryEffects(parsed, session.videoId);
     recordTurn(session.dbId, { clarity, struggled: parsed.struggled_phrases.length > 0 });
 
