@@ -10,17 +10,20 @@
   </nav>
 
   <section id="home" class="screen">
-    <header><div><h1>Fala</h1><p>Practice Brazilian Portuguese by speaking</p></div></header>
+    <header><div><h1>Fala</h1><p id="homeSubtitle">Practice Brazilian Portuguese by speaking</p></div></header>
 
     <div class="card">
+      <label class="field-label" for="languageSelect">Language</label>
+      <select id="languageSelect"></select>
+
       <label class="field-label">Mode</label>
       <div id="modeChips" class="chip-picker"></div>
 
       <label class="field-label">Today's conversation</label>
       <div id="topicChips" class="chip-picker"></div>
 
-      <label class="field-label">Difficulty: <span id="difficultyValue">3</span>/10 <span id="adaptiveNote" class="adaptive-note"></span></label>
-      <input id="difficulty" type="range" min="1" max="10" value="3">
+      <label class="field-label">Difficulty: <span id="difficultyValue">A2</span> <span id="adaptiveNote" class="adaptive-note"></span></label>
+      <input id="difficulty" type="range" min="1" max="6" value="2">
 
       <label class="checkbox-row"><input id="subtitlesToggle" type="checkbox"> Show subtitles while Fala speaks</label>
 
@@ -40,6 +43,18 @@
       <div class="card"><span class="eyebrow">VOCABULARY MEMORY</span><h3>Phrases to review</h3><div id="reviewPhrases" class="chips"><span class="muted-note">Nothing yet — have a conversation first.</span></div></div>
       <div class="card"><span class="eyebrow">RECENT SESSIONS</span><ul id="recentSessions"><li class="muted-note">No sessions yet.</li></ul></div>
     </section>
+  </section>
+
+  <section id="startup" class="screen hidden">
+    <div class="startup-wrap">
+      <div class="startup-mark" aria-hidden="true">
+        <span class="startup-ring"></span>
+      </div>
+      <span class="eyebrow">GETTING READY</span>
+      <h1>Preparando a Fala</h1>
+      <div class="progress-bar" role="progressbar" aria-label="Preparing conversation"><span></span></div>
+      <p id="startupState">Escolhendo uma primeira pergunta...</p>
+    </div>
   </section>
 
   <section id="live" class="screen hidden">
@@ -69,12 +84,29 @@
     </div>
   </section>
 
+  <section id="summary" class="screen hidden">
+    <div class="summary-wrap card">
+      <span class="eyebrow">SESSION COMPLETE</span>
+      <h1>Great job!</h1>
+      <section class="summary-stats">
+        <div><span class="summary-label">Average clarity</span><strong id="summaryClarity">—</strong></div>
+        <div><span class="summary-label">Turns</span><strong id="summaryTurns">0</strong></div>
+        <div><span class="summary-label">Next difficulty</span><strong id="summaryDifficulty">A2</strong></div>
+      </section>
+      <div class="learned-box summary-learned">
+        <span class="eyebrow">WORDS LEARNED</span>
+        <div id="summaryPhrases" class="chips"></div>
+      </div>
+      <div class="controls"><button id="summaryDone" class="primary">Done</button></div>
+    </div>
+  </section>
+
   <section id="dashboard" class="screen hidden">
     <header><div><h1>Progress</h1><p>Streaks, mastery, and clarity over time.</p></div></header>
 
     <section class="grid stat-grid">
       <div class="card stat-card"><span class="eyebrow">STREAK</span><div id="streakValue" class="stat-value">0 dias</div></div>
-      <div class="card stat-card"><span class="eyebrow">ADAPTIVE DIFFICULTY</span><div id="adaptiveValue" class="stat-value">3/10</div></div>
+      <div class="card stat-card"><span class="eyebrow">ADAPTIVE DIFFICULTY</span><div id="adaptiveValue" class="stat-value">A2</div></div>
       <div class="card stat-card"><span class="eyebrow">CLARITY TREND</span><div id="claritySpark" class="spark"></div></div>
     </section>
 

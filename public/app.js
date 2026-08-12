@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const homeScreen = $('home'), liveScreen = $('live'), dashboardScreen = $('dashboard');
+const homeScreen = $('home'), startupScreen = $('startup'), liveScreen = $('live'), dashboardScreen = $('dashboard'), summaryScreen = $('summary');
 const tabHome = $('tabHome'), tabDashboard = $('tabDashboard');
 const orb = $('orb'), liveState = $('liveState'), clarityNote = $('clarityNote');
 const learnedChips = $('learnedChips'), liveError = $('liveError'), startError = $('startError');
@@ -17,6 +17,10 @@ let recordedChunks = [];
 let micStream = null;
 let busy = false;
 let subtitlesTouched = false;
+let learnedPhraseKeys = new Set();
+let selectedLanguage = 'pt-BR';
+let languageLabels = new Map();
+const difficultyLabels = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
 
 subtitlesToggle.onchange = () => { subtitlesTouched = true; };
 
@@ -31,6 +35,85 @@ function playBase64Wav(base64) {
     remoteAudio.onerror = resolve;
     remoteAudio.play().catch(resolve);
   });
+}
+
+async function playResponseAudio(data) {
+  if (data.audio) {
+    await playBase64Wav(data.audio);
+    return;
+  }
+
+  if (!data.audioId) return;
+
+  const r = await fetch(`/api/audio/${data.audioId}`);
+  const audioData = await r.json();
+  if (!r.ok) throw new Error(audioData.error || 'Could not load audio.');
+  setOrbState('speaking');
+  liveState.textContent = 'Fala está falando…';
+  await playBase64Wav(audioData.audio);
+}
+
+async function readStreamingReply(response) {
+  if (!response.ok) {
+    const text = await response.text();
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed.error) throw new Error(parsed.error);
+    } catch {
+      // Fall through to the generic message below when the body is not JSON.
+    }
+    throw new Error(text || 'Request failed.');
+  }
+
+  if (!String(response.headers.get('content-type') || '').includes('application/x-ndjson')) {
+    return response.json();
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const message = JSON.parse(line);
+      if (message.event === 'reply') return message.data;
+      if (message.event === 'error') throw new Error(message.data?.error || 'Request failed.');
+    }
+
+    if (done) break;
+  }
+
+  throw new Error('No reply received.');
+}
+
+async function loadResponseTranslation(data, transcriptRow) {
+  if (!data.translationId) return data.translation || '';
+
+  try {
+    const r = await fetch(`/api/translation/${data.translationId}`);
+    const translationData = await r.json();
+    if (!r.ok) throw new Error(translationData.error || 'Could not load translation.');
+    const translation = translationData.translation || '';
+    subtitleEn.textContent = translation;
+    if (transcriptRow && translation) {
+      let enEl = transcriptRow.querySelector('.transcript-en');
+      if (!enEl) {
+        enEl = document.createElement('span');
+        enEl.className = 'transcript-en';
+        transcriptRow.appendChild(enEl);
+      }
+      enEl.textContent = translation;
+    }
+    return translation;
+  } catch (err) {
+    return '';
+  }
 }
 
 function showSubtitles(pt, en) {
@@ -67,10 +150,15 @@ function addTranscriptEntry(speaker, pt, en) {
 
   transcriptLog.appendChild(row);
   transcriptLog.scrollTop = transcriptLog.scrollHeight;
+  return row;
 }
 
 function addLearnedPhrases(phrases) {
   for (const p of phrases || []) {
+    const key = String(p.pt || '').trim().toLocaleLowerCase();
+    if (!key || learnedPhraseKeys.has(key)) continue;
+    learnedPhraseKeys.add(key);
+
     const span = document.createElement('span');
     span.title = p.en || '';
     span.textContent = p.pt;
@@ -86,11 +174,18 @@ function clarityLabel(clarity) {
   return `Um pouco difícil de entender · ${pct}%`;
 }
 
+function difficultyLabel(value) {
+  const index = Math.max(1, Math.min(6, Number(value) || 2)) - 1;
+  return difficultyLabels[index];
+}
+
 // --- tab switching ---
 
 function showTab(tab) {
   homeScreen.classList.toggle('hidden', tab !== 'home');
   dashboardScreen.classList.toggle('hidden', tab !== 'dashboard');
+  startupScreen.classList.add('hidden');
+  summaryScreen.classList.add('hidden');
   liveScreen.classList.add('hidden');
   tabHome.classList.toggle('active', tab === 'home');
   tabDashboard.classList.toggle('active', tab === 'dashboard');
@@ -106,6 +201,7 @@ async function loadState() {
   try {
     const r = await fetch('/api/state');
     const data = await r.json();
+    renderLanguages(data.languages, data.selectedLanguage);
     renderModes(data.modes);
     renderTopics(data.topics);
     renderReview(data.review);
@@ -113,7 +209,8 @@ async function loadState() {
     renderRecentVideos(data.recentVideos);
     if (typeof data.suggestedDifficulty === 'number') {
       $('difficulty').value = data.suggestedDifficulty;
-      $('difficultyValue').textContent = data.suggestedDifficulty;
+      $('difficultyValue').textContent = difficultyLabel(data.suggestedDifficulty);
+      updateDifficultySlider(data.suggestedDifficulty);
       $('adaptiveNote').textContent = '(sugerido pelo seu progresso)';
       if (!subtitlesTouched) subtitlesToggle.checked = data.suggestedDifficulty <= 2;
     }
@@ -121,6 +218,40 @@ async function loadState() {
     startError.textContent = 'Could not load app state. Is the server running?';
   }
 }
+
+function renderLanguages(languages, selected) {
+  const select = $('languageSelect');
+  if (!select) return;
+
+  languageLabels = new Map((languages || []).map(language => [language.id, language.label || language.nativeLabel || language.id]));
+  select.innerHTML = (languages || []).map(language =>
+    `<option value="${escapeHtml(language.id)}">${escapeHtml(language.nativeLabel || language.label)}</option>`
+  ).join('');
+  selectedLanguage = selected || languages?.[0]?.id || 'pt-BR';
+  select.value = selectedLanguage;
+  updateLanguageCopy();
+  select.onchange = () => {
+    selectedLanguage = select.value;
+    selectedVideoId = null;
+    updateLanguageCopy();
+  };
+}
+
+function updateLanguageCopy() {
+  const label = languageLabels.get(selectedLanguage) || 'Brazilian Portuguese';
+  $('homeSubtitle').textContent = `Practice ${label} by speaking`;
+}
+
+function updateDifficultySlider(level) {
+  const slider = $('difficulty');
+  const min = Number(slider.min || 1);
+  const max = Number(slider.max || 6);
+  const pct = ((Number(level) - min) / (max - min)) * 100;
+  slider.style.setProperty('--difficultyProgress', `${Math.max(0, Math.min(100, pct))}%`);
+  slider.setAttribute('aria-valuetext', difficultyLabel(level));
+}
+
+updateDifficultySlider($('difficulty').value);
 
 function renderModes(modes) {
   const box = $('modeChips');
@@ -179,7 +310,7 @@ function renderRecent(sessions) {
     return;
   }
   list.innerHTML = sessions.map(s =>
-    `<li>${escapeHtml(s.topic)} · nível ${s.difficulty} · ${s.turns} turnos${typeof s.avg_clarity === 'number' ? ` · clareza ${Math.round(s.avg_clarity * 100)}%` : ''}</li>`
+    `<li>${escapeHtml(s.topic)} · ${difficultyLabel(s.difficulty)} · ${s.turns} turnos${typeof s.avg_clarity === 'number' ? ` · clareza ${Math.round(s.avg_clarity * 100)}%` : ''}</li>`
   ).join('');
 }
 
@@ -202,7 +333,8 @@ function renderRecentVideos(videos) {
 
 $('difficulty').oninput = e => {
   const level = Number(e.target.value);
-  $('difficultyValue').textContent = level;
+  $('difficultyValue').textContent = difficultyLabel(level);
+  updateDifficultySlider(level);
   $('adaptiveNote').textContent = '';
   if (!subtitlesTouched) subtitlesToggle.checked = level <= 2;
 };
@@ -215,12 +347,13 @@ $('videoForm').onsubmit = async e => {
   const submitBtn = e.target.querySelector('button');
   submitBtn.disabled = true;
   submitBtn.textContent = 'Preparando…';
+  submitBtn.classList.add('loading');
   resultBox.innerHTML = '<p class="muted-note">Baixando legendas e extraindo vocabulário… isso pode levar um minuto.</p>';
   try {
     const r = await fetch('/api/youtube', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, language: selectedLanguage }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || 'Could not prepare this video.');
@@ -239,6 +372,7 @@ $('videoForm').onsubmit = async e => {
   } finally {
     submitBtn.disabled = false;
     submitBtn.textContent = 'Prepare video';
+    submitBtn.classList.remove('loading');
   }
 };
 
@@ -248,48 +382,77 @@ $('startBtn').onclick = async () => {
   startError.textContent = '';
   $('startBtn').disabled = true;
   $('startBtn').textContent = 'Preparando…';
+  $('startBtn').classList.add('loading');
+  showStartup();
   try {
     const difficulty = Number($('difficulty').value);
     const body = selectedVideoId
-      ? { videoId: selectedVideoId, difficulty }
-      : { topic: selectedTopic, mode: selectedMode, difficulty };
+      ? { videoId: selectedVideoId, difficulty, language: selectedLanguage }
+      : { topic: selectedTopic, mode: selectedMode, difficulty, language: selectedLanguage };
     const r = await fetch('/api/session/start', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
       body: JSON.stringify(body),
     });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || 'Could not start session.');
+    const data = await readStreamingReply(r);
     sessionId = data.sessionId;
     learnedChips.innerHTML = '';
-    addLearnedPhrases(data.newPhrases);
+    learnedPhraseKeys = new Set();
     transcriptLog.textContent = '';
     clarityNote.textContent = '';
-    homeScreen.classList.add('hidden');
-    dashboardScreen.classList.add('hidden');
-    liveScreen.classList.remove('hidden');
-    setOrbState('speaking');
-    liveState.textContent = 'Fala está falando…';
-    showSubtitles(data.replyText, data.translation);
-    addTranscriptEntry('fala', data.replyText, data.translation);
-    await playBase64Wav(data.audio);
+    showLive();
+    setOrbState(data.audioId ? 'thinking' : 'speaking');
+    liveState.textContent = data.audioId ? 'Carregando áudio…' : 'Fala está falando…';
+    showSubtitles(data.replyText, data.translationId ? '…' : data.translation);
+    const row = addTranscriptEntry('fala', data.replyText, data.translation);
+    await Promise.all([
+      loadResponseTranslation(data, row),
+      playResponseAudio(data),
+    ]);
     hideSubtitles();
     setOrbState('idle');
     liveState.textContent = 'Toque para falar';
   } catch (err) {
+    showTab('home');
     startError.textContent = err.message;
   } finally {
     busy = false;
     $('startBtn').disabled = false;
     $('startBtn').textContent = 'Start talking';
+    $('startBtn').classList.remove('loading');
   }
 };
 
+function showStartup() {
+  homeScreen.classList.add('hidden');
+  dashboardScreen.classList.add('hidden');
+  summaryScreen.classList.add('hidden');
+  liveScreen.classList.add('hidden');
+  startupScreen.classList.remove('hidden');
+  tabHome.classList.remove('active');
+  tabDashboard.classList.remove('active');
+  $('startupState').textContent = selectedVideoId
+    ? 'Lendo o vídeo e montando a conversa...'
+    : 'Escolhendo uma primeira pergunta...';
+}
+
+function showLive() {
+  homeScreen.classList.add('hidden');
+  dashboardScreen.classList.add('hidden');
+  summaryScreen.classList.add('hidden');
+  startupScreen.classList.add('hidden');
+  liveScreen.classList.remove('hidden');
+  tabHome.classList.remove('active');
+  tabDashboard.classList.remove('active');
+}
+
 function setOrbState(state) {
-  orb.classList.remove('listening', 'speaking', 'busy');
+  orb.classList.remove('listening', 'speaking', 'busy', 'thinking', 'audio');
   if (state === 'listening') orb.classList.add('listening');
   if (state === 'speaking') orb.classList.add('speaking');
   if (state === 'busy') orb.classList.add('busy');
+  if (state === 'thinking') orb.classList.add('thinking');
+  if (state === 'audio') orb.classList.add('audio');
 }
 
 orb.onclick = async () => {
@@ -325,7 +488,7 @@ function stopRecording() {
       resolve();
     };
     mediaRecorder.stop();
-    setOrbState('busy');
+    setOrbState('thinking');
     liveState.textContent = 'Pensando…';
   });
 }
@@ -336,19 +499,20 @@ async function sendTurn(blob) {
     const buf = await blob.arrayBuffer();
     const r = await fetch(`/api/session/${sessionId}/turn`, {
       method: 'POST',
-      headers: { 'Content-Type': 'audio/webm' },
+      headers: { 'Content-Type': 'audio/webm', Accept: 'application/x-ndjson' },
       body: buf,
     });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || 'Could not process your turn.');
+    const data = await readStreamingReply(r);
     addTranscriptEntry('you', data.userText);
     clarityNote.textContent = clarityLabel(data.clarity);
-    addLearnedPhrases(data.newPhrases);
-    setOrbState('speaking');
-    liveState.textContent = 'Fala está falando…';
-    showSubtitles(data.replyText, data.translation);
-    addTranscriptEntry('fala', data.replyText, data.translation);
-    await playBase64Wav(data.audio);
+    setOrbState(data.audioId ? 'thinking' : 'speaking');
+    liveState.textContent = data.audioId ? 'Pensando…' : 'Fala está falando…';
+    showSubtitles(data.replyText, data.translationId ? '…' : data.translation);
+    const row = addTranscriptEntry('fala', data.replyText, data.translation);
+    await Promise.all([
+      loadResponseTranslation(data, row),
+      playResponseAudio(data),
+    ]);
     hideSubtitles();
     setOrbState('idle');
     liveState.textContent = 'Toque para falar';
@@ -362,8 +526,11 @@ async function sendTurn(blob) {
 }
 
 $('endBtn').onclick = async () => {
+  let summary = null;
   if (sessionId) {
-    await fetch(`/api/session/${sessionId}/end`, { method: 'POST' }).catch(() => {});
+    summary = await fetch(`/api/session/${sessionId}/end`, { method: 'POST' })
+      .then(r => r.json())
+      .catch(() => null);
   }
   sessionId = null;
   selectedVideoId = null;
@@ -371,9 +538,32 @@ $('endBtn').onclick = async () => {
   micStream?.getTracks().forEach(t => t.stop());
   hideSubtitles();
   liveScreen.classList.add('hidden');
-  showTab('home');
+  showSummary(summary);
   loadState();
 };
+
+$('summaryDone').onclick = () => showTab('home');
+
+function showSummary(summary) {
+  homeScreen.classList.add('hidden');
+  dashboardScreen.classList.add('hidden');
+  liveScreen.classList.add('hidden');
+  summaryScreen.classList.remove('hidden');
+  tabHome.classList.remove('active');
+  tabDashboard.classList.remove('active');
+
+  const avgClarity = typeof summary?.avgClarity === 'number'
+    ? `${Math.round(summary.avgClarity * 100)}%`
+    : '—';
+  $('summaryClarity').textContent = avgClarity;
+  $('summaryTurns').textContent = String(summary?.turns || 0);
+  $('summaryDifficulty').textContent = difficultyLabel(summary?.nextDifficulty || Number($('difficulty').value));
+
+  const phrases = summary?.learnedPhrases || [];
+  $('summaryPhrases').innerHTML = phrases.length
+    ? phrases.map(p => `<span title="${escapeHtml(p.en || '')}">${escapeHtml(p.pt)}</span>`).join('')
+    : '<span class="muted-note">No new words this time.</span>';
+}
 
 // --- dashboard ---
 
@@ -382,7 +572,7 @@ async function loadDashboard() {
     const r = await fetch('/api/dashboard');
     const data = await r.json();
     $('streakValue').textContent = `${data.streak} ${data.streak === 1 ? 'dia' : 'dias'}`;
-    $('adaptiveValue').textContent = `${data.adaptiveDifficulty}/10`;
+    $('adaptiveValue').textContent = difficultyLabel(data.adaptiveDifficulty);
     renderClaritySpark(data.clarityTrend);
     renderMasteryBars(data.masteryBuckets);
     renderAllPhrases(data.phrases);
@@ -441,7 +631,7 @@ function renderDashboardSessions(sessions) {
     return;
   }
   list.innerHTML = sessions.map(s => `
-    <li>${escapeHtml(s.topic)} · ${s.mode} · nível ${s.difficulty} · ${s.turns} turnos${typeof s.avg_clarity === 'number' ? ` · clareza ${Math.round(s.avg_clarity * 100)}%` : ''}</li>
+    <li>${escapeHtml(s.topic)} · ${s.mode} · ${difficultyLabel(s.difficulty)} · ${s.turns} turnos${typeof s.avg_clarity === 'number' ? ` · clareza ${Math.round(s.avg_clarity * 100)}%` : ''}</li>
   `).join('');
 }
 
