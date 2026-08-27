@@ -1,7 +1,6 @@
 # Fala
 
-Fala is a voice-based Brazilian Portuguese practice app. You talk into the microphone, a local language model plays a conversation partner, and a local text-to-speech voice reads its replies back to you. There is no typing during a session and no cloud API involved — speech recognition, conversation generation, and speech synthesis all run on your own machine.
-
+Fala is a voice-based Brazilian Portuguese practice app. You talk into the microphone, a local language model plays a conversation partner, and a local text-to-speech voice reads its replies back to you.
 ## Architecture
 
 Each turn moves through four local components:
